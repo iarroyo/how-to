@@ -21,7 +21,7 @@ tags: ember-concurrency, tasks, data-loading, concurrency-patterns, getPromiseSt
 4. [Route-based Data Loading](#route-based-data-loading)
    - [Loading & Error Substates](#loading--error-substates-optional)
    - [Avoid Preloading Data That Isn't Required](#avoid-preloading-data-that-isnt-required)
-   - [Refreshing Data on Back/Forward Navigation](#refreshing-data-on-backforward-navigation)
+   - [When to Use `routeDidChange`](#when-to-use-routedidchange)
 5. [URL State Management with Query Params](#url-state-management-with-query-params)
 6. [User Input Concurrency with ember-concurrency](#user-input-concurrency-with-ember-concurrency)
    - [Task Modifiers](#task-modifiers)
@@ -828,141 +828,113 @@ export default class UserRoute extends Route {
 | Component loads data | Tab/section may never be viewed, no URL state needed |
 | URL params + route   | View state should be shareable/bookmarkable          |
 
-#### Refreshing Data on Back/Forward Navigation
+#### When to Use `routeDidChange`
 
-The route `model` hook does **not** re-trigger when navigating back/forward in browser history. If you need fresh data on every route visit, use the router's `routeDidChange` event.
+The `routeDidChange` event fires after every completed transition, regardless of how it was triggered. Unlike route lifecycle hooks (`model`, `activate`, `setupController`), which only exist inside route classes, `routeDidChange` is available anywhere you have access to the router service.
+
+Use it for these scenarios:
+
+**1. Cross-cutting concerns that need to know about every navigation**
+
+Things that live outside any single route — analytics, breadcrumbs, document title updates, progress indicators. These need to fire on every transition regardless of route hierarchy.
 
 ```ts
-// app/services/user-data.ts
+// app/services/analytics.ts
 import Service from "@ember/service";
 import { service } from "@ember/service";
-import { tracked } from "@glimmer/tracking";
-import { cached } from "@glimmer/tracking";
-import { getPromiseState } from "reactiveweb";
 import type RouterService from "@ember/routing/router-service";
-import type Transition from "@ember/routing/transition";
 
-interface User {
-  name: string;
-  email: string;
-}
-
-export default class UserDataService extends Service {
+export default class AnalyticsService extends Service {
   @service declare router: RouterService;
-
-  @tracked currentUserId: string | null = null;
-  #promise: Promise<User> | null = null;
 
   constructor(properties?: object) {
     super(properties);
-    // Listen for route changes (including back/forward navigation)
-    this.router.on("routeDidChange", this.handleRouteChange);
+    this.router.on("routeDidChange", () => {
+      this.track(this.router.currentURL);
+    });
   }
 
-  willDestroy(): void {
-    super.willDestroy();
-    this.router.off("routeDidChange", this.handleRouteChange);
-  }
-
-  handleRouteChange = (transition: Transition) => {
-    // Check if we're entering a user route
-    const userRouteInfo = transition.to?.find(
-      (route: { name: string }) => route.name === "user",
-    );
-
-    if (userRouteInfo) {
-      const userId = userRouteInfo.params["user_id"] as string;
-      this.loadUser(userId, { forceRefresh: true });
-    }
-  };
-
-  loadUser(userId: string, { forceRefresh = false } = {}) {
-    if (forceRefresh || this.currentUserId !== userId) {
-      this.currentUserId = userId;
-      this.#promise = null; // Invalidate cache
-    }
-  }
-
-  @cached
-  get user() {
-    if (!this.currentUserId) {
-      return { isLoading: false, error: null, resolved: null };
-    }
-
-    if (!this.#promise) {
-      this.#promise = fetch(`/api/users/${this.currentUserId}`).then((r) =>
-        r.json(),
-      );
-    }
-
-    return getPromiseState(this.#promise);
+  track(url: string) {
+    // Send page view to analytics provider
   }
 }
 ```
 
+**2. Reacting to navigation from a service or component (not a route)**
+
+Route lifecycle hooks (`model`, `activate`, `setupController`) are only available inside route classes. If you need to react to navigation from a service or component, `routeDidChange` is your only clean option.
+
 ```ts
-// app/routes/user.ts
-import Route from "@ember/routing/route";
+// app/services/breadcrumbs.ts
+import Service from "@ember/service";
 import { service } from "@ember/service";
-import type UserDataService from "../services/user-data";
+import { tracked } from "@glimmer/tracking";
+import type RouterService from "@ember/routing/router-service";
+import type Transition from "@ember/routing/transition";
 
-export default class UserRoute extends Route {
-  @service declare userData: UserDataService;
+interface Breadcrumb {
+  label: string;
+  route: string;
+}
 
-  model({ user_id }: { user_id: string }) {
-    // Initial load - service handles subsequent refreshes via routeDidChange
-    this.userData.loadUser(user_id);
+export default class BreadcrumbsService extends Service {
+  @service declare router: RouterService;
+
+  @tracked items: Breadcrumb[] = [];
+
+  constructor(properties?: object) {
+    super(properties);
+    this.router.on("routeDidChange", (transition: Transition) => {
+      this.items = transition.to?.find(() => true)
+        ? this.buildBreadcrumbs(transition)
+        : [];
+    });
+  }
+
+  private buildBreadcrumbs(transition: Transition): Breadcrumb[] {
+    // Build breadcrumb trail from transition.to route info chain
+    return [];
   }
 }
 ```
 
-```glimmer-ts
-// app/components/user-profile.gts
-import Component from '@glimmer/component';
-import { service } from '@ember/service';
-import type UserDataService from '../services/user-data';
+**3. Detecting transitions where the model hook was skipped**
 
-class UserProfile extends Component {
-  @service declare userData: UserDataService;
+When navigating with `transitionTo` and passing an object context instead of an ID, the `model` hook is skipped entirely. `routeDidChange` still fires, making it the only consistent place to intercept "we navigated to this route" regardless of how the transition happened.
 
-  <template>
-    {{#if this.userData.user.isLoading}}
-      <div>Loading...</div>
-    {{else if this.userData.user.resolved}}
-      <h1>{{this.userData.user.resolved.name}}</h1>
-      <p>{{this.userData.user.resolved.email}}</p>
-    {{/if}}
-  </template>
-}
-```
+**4. Reacting to query param changes without `refreshModel`**
 
-**When to use `routeDidChange`:**
-
-- Data must be fresh on every route visit (not cached)
-- Back/forward navigation should refetch data
-- Route params alone don't trigger model hook (same route, different context)
-
-**Alternative: Force model refresh with `refreshModel`**
-
-For query param changes, you can use `refreshModel: true`:
+If a query param changes without `refreshModel: true`, no route hooks fire — but `routeDidChange` still fires. Use this when you need a side effect (not a model reload) on query param change.
 
 ```ts
-// app/routes/users.ts
-export default class UsersRoute extends Route {
-  queryParams = {
-    page: { refreshModel: true },
-    sort: { refreshModel: true },
-  };
+// app/services/search-tracking.ts
+import Service from "@ember/service";
+import { service } from "@ember/service";
+import type RouterService from "@ember/routing/router-service";
 
-  async model({ page, sort }: { page: number; sort: string }) {
-    // This WILL re-run when page or sort query params change
-    const response = await fetch(`/api/users?page=${page}&sort=${sort}`);
-    return response.json();
+export default class SearchTrackingService extends Service {
+  @service declare router: RouterService;
+
+  constructor(properties?: object) {
+    super(properties);
+    this.router.on("routeDidChange", () => {
+      const url = new URL(this.router.currentURL, window.location.origin);
+      const query = url.searchParams.get("q");
+
+      if (query) {
+        // Log search term — no model reload needed, just a side effect
+        console.debug("Search query changed:", query);
+      }
+    });
   }
 }
 ```
 
-Note: `refreshModel` only works for query param changes, not for back/forward navigation to the same URL.
+**When NOT to use `routeDidChange`:**
+
+- For data loading — use `getPromiseState` in components or the route `model` hook instead
+- As a substitute for `refreshModel: true` — if you need the model to reload on QP changes, use `refreshModel`
+- For route-specific setup — use route lifecycle hooks (`model`, `setupController`, `activate`) directly
 
 ### URL State Management with Query Params
 
