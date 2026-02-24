@@ -11,7 +11,7 @@ tags: ember-concurrency, tasks, data-loading, concurrency-patterns, getPromiseSt
 
 1. [Why Not ember-concurrency for Data Loading?](#why-not-ember-concurrency-for-data-loading)
 2. [Initial Data Loading Patterns](#initial-data-loading-patterns)
-   - [Constructor-based Loading](#constructor-based-loading)
+   - [~~Constructor-based Loading~~](#constructor-based-loading)
    - [Reactive Cached Getter](#reactive-cached-getter)
    - [Reusable Request Component](#reusable-request-component)
 3. [Shared Requests Across Multiple Components](#shared-requests-across-multiple-components)
@@ -32,7 +32,7 @@ tags: ember-concurrency, tasks, data-loading, concurrency-patterns, getPromiseSt
 
 This guide covers patterns for loading and sharing data in Ember applications:
 
-- **Initial data loading**: Constructor, `@cached` getter, and Request component patterns
+- **Initial data loading**: ~~Constructor~~, `@cached` getter, and Request component patterns
 - **Shared requests**: Service caching, parent request distribution, and request managers with TTL
 - **Route-based loading**: When to use route model hooks (first-level components only)
 - **URL state management**: Query params driving service state for shareable, bookmarkable views
@@ -127,17 +127,22 @@ For data that should load immediately when a component renders (not triggered by
 
 | Pattern           | Use When                                       |
 | ----------------- | ---------------------------------------------- |
-| Constructor       | One-time fetch, no reactive dependencies       |
+| ~~Constructor~~   | ~~One-time fetch, no reactive dependencies~~   |
 | `@cached` getter  | Fetch depends on reactive args that may change |
 | Request component | Declarative loading, consistent UI patterns    |
 
-#### Constructor-based Loading
+#### ~~Constructor-based Loading~~
 
-Use the constructor when you need to fetch data once when the component is instantiated.
+> **Not recommended.** Constructors should not be asynchronous because they are meant to initialize an instance of a class synchronously. While you can technically run a promise in a constructor, the instance will be returned before the asynchronous operation completes, which can lead to potential issues if the rest of your code expects the object to be fully initialized. While returning the promise may seem the solution for this problem, it is not standard practice and can lead to unexpected behavior. Returning a promise (or, in general, any object from another class) from a constructor can be misleading and is considered a bad practice as this leads to unexpected results with inheritance and the `instanceof` operator.
+>
+> **Use a `@cached` getter or the Request component instead.**
 
-> **Important:** The constructor runs only once when the component is first created. It will **never** re-run when arguments change. If your fetch depends on reactive args that may change over time, use a `@cached` getter instead.
+~~Use the constructor when you need to fetch data once when the component is instantiated.~~
+
+~~**Important:** The constructor runs only once when the component is first created. It will **never** re-run when arguments change. If your fetch depends on reactive args that may change over time, use a `@cached` getter instead.~~
 
 ```glimmer-ts
+// DON'T DO THIS — constructor-based async loading is an anti-pattern
 // app/components/dashboard.gts
 import Component from '@glimmer/component';
 import { getPromiseState } from 'reactiveweb';
